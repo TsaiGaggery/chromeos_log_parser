@@ -1,0 +1,10 @@
+# ChromeOS Log Analyzer Dependencies
+# Core dependencies
+# No external dependencies required for basic functionality
+
+# Optional development dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Optional for advanced data processing
+# pandas>=2.0.0  # Uncomment if needed for data manipulation

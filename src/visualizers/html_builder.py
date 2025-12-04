@@ -4,9 +4,19 @@ HTMLBuilder - Build complete HTML report with embedded data.
 
 import json
 import html
+import re
 from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
+
+
+def natural_sort_key(s: str):
+    """
+    Generate a key for natural sorting (e.g., part2 before part10).
+    Splits the string into text and numeric parts for proper ordering.
+    """
+    return [int(text) if text.isdigit() else text.lower() 
+            for text in re.split(r'(\d+)', s)]
 
 
 class HTMLBuilder:
@@ -98,10 +108,23 @@ class HTMLBuilder:
                 <div class="modal-content">
                     <div class="modal-header">
                         <h5 class="modal-title" id="logModalTitle">Log Content</h5>
+                        <div class="ms-auto me-3 d-flex align-items-center gap-2">
+                            <input type="text" class="form-control form-control-sm" id="logContentSearch" 
+                                   placeholder="Search in content..." style="width: 200px;"
+                                   oninput="highlightInLog(this.value)">
+                            <span id="searchResultCount" class="text-muted small"></span>
+                        </div>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <pre id="logModalContent" class="log-content"></pre>
+                    </div>
+                    <div class="modal-footer justify-content-between">
+                        <div>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="navigateHighlight(-1)">← Prev</button>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="navigateHighlight(1)">Next →</button>
+                        </div>
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                     </div>
                 </div>
             </div>
@@ -366,6 +389,19 @@ class HTMLBuilder:
             transition: all 0.3s ease;
         }
         
+        /* Search highlight styles */
+        .search-highlight {
+            background-color: rgba(255, 213, 0, 0.4);
+            color: inherit;
+            padding: 1px 2px;
+            border-radius: 2px;
+        }
+        
+        .search-highlight.current-highlight {
+            background-color: rgba(255, 140, 0, 0.8);
+            box-shadow: 0 0 4px rgba(255, 140, 0, 0.6);
+        }
+        
         /* Custom scrollbar */
         ::-webkit-scrollbar {
             width: 8px;
@@ -479,13 +515,28 @@ class HTMLBuilder:
         sections_html += """
         <div class="row mt-4">
             <div class="col-12">
-                <div class="mb-2">
+                <div class="mb-2 d-flex gap-2 align-items-center">
                     <button class="btn btn-sm btn-outline-secondary" onclick="resetAllZoom()">Reset All Zoom</button>
+                    <div class="dropdown">
+                        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" id="errorMarkerDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="bi bi-exclamation-triangle me-1" viewBox="0 0 16 16">
+                                <path d="M7.938 2.016A.13.13 0 0 1 8.002 2a.13.13 0 0 1 .063.016.146.146 0 0 1 .054.057l6.857 11.667c.036.06.035.124.002.183a.163.163 0 0 1-.054.06.116.116 0 0 1-.066.017H1.146a.115.115 0 0 1-.066-.017.163.163 0 0 1-.054-.06.176.176 0 0 1 .002-.183L7.884 2.073a.147.147 0 0 1 .054-.057zm1.044-.45a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566z"/>
+                                <path d="M7.002 12a1 1 0 1 1 2 0 1 1 0 0 1-2 0zM7.1 5.995a.905.905 0 1 1 1.8 0l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995z"/>
+                            </svg>
+                            <span id="errorMarkerBtnText">Error Markers: Off</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark" aria-labelledby="errorMarkerDropdown">
+                            <li><a class="dropdown-item" href="#" onclick="setErrorMarkerLevel('none'); return false;">Hide All</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="setErrorMarkerLevel('critical'); return false;">Critical Only</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="setErrorMarkerLevel('error'); return false;">Error & Critical</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="setErrorMarkerLevel('all'); return false;">All (incl. Warning)</a></li>
+                        </ul>
+                    </div>
                 </div>
             </div>
         </div>"""
         
-        for segment_name in sorted(segments.keys()):
+        for segment_name in sorted(segments.keys(), key=natural_sort_key):
             segment_charts = segments[segment_name]
             cpu_chart = segment_charts.get('cpu')
             thermal_chart_info = segment_charts.get('thermal')
@@ -602,9 +653,12 @@ class HTMLBuilder:
                 Error Summary ({len(errors)} total)
             </h5>
             {summary_html}
-            <div class="table-responsive">
-                <table class="table table-sm table-hover">
-                    <thead>
+            <div class="mb-2">
+                <input type="text" class="form-control form-control-sm" id="errorSearchInput" placeholder="Search errors..." oninput="filterErrors(this.value)">
+            </div>
+            <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                <table class="table table-sm table-hover" id="errorTable">
+                    <thead style="position: sticky; top: 0; z-index: 1;">
                         <tr>
                             <th>Severity</th>
                             <th>Time</th>
@@ -692,13 +746,168 @@ class HTMLBuilder:
         const chartConfigs = {charts_json};
         const thermalConfig = {thermal_json};
         const chartInstances = {{}};
+        const originalAnnotations = {{}};  // Store original annotations for filtering
+        let currentErrorLevel = 'none';  // Default: hide all error markers
+        
+        // Create custom tooltip element for error annotations
+        function createErrorTooltip() {{
+            const tooltip = document.createElement('div');
+            tooltip.id = 'errorTooltip';
+            tooltip.style.cssText = `
+                position: fixed;
+                background: rgba(30, 30, 30, 0.95);
+                border: 1px solid #a371f7;
+                border-radius: 8px;
+                padding: 10px 14px;
+                font-size: 12px;
+                color: #e6edf3;
+                z-index: 10000;
+                pointer-events: none;
+                display: none;
+                max-width: 400px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+                font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            `;
+            document.body.appendChild(tooltip);
+            return tooltip;
+        }}
+        
+        const errorTooltip = createErrorTooltip();
+        
+        // Setup hover handlers for annotation tooltips
+        function setupAnnotationHover(chart, chartId) {{
+            const canvas = chart.canvas;
+            
+            canvas.addEventListener('mousemove', function(e) {{
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                
+                // Check if hovering over any annotation
+                const annotations = chart.options.plugins.annotation?.annotations || {{}};
+                let foundAnnotation = null;
+                
+                for (const [key, annotation] of Object.entries(annotations)) {{
+                    if (!annotation.errorDetails) continue;
+                    
+                    // Get the x position of the annotation line
+                    const xScale = chart.scales.x;
+                    const annotationX = xScale.getPixelForValue(new Date(annotation.xMin));
+                    
+                    // Check if mouse is near the annotation line (within 8 pixels)
+                    if (Math.abs(x - annotationX) < 8 && y > chart.chartArea.top && y < chart.chartArea.bottom) {{
+                        foundAnnotation = annotation;
+                        break;
+                    }}
+                }}
+                
+                if (foundAnnotation && foundAnnotation.errorDetails) {{
+                    const details = foundAnnotation.errorDetails;
+                    errorTooltip.innerHTML = `
+                        <div style="margin-bottom: 6px; color: ${{details.severity === 'CRITICAL' ? '#a371f7' : '#f85149'}}; font-weight: bold;">
+                            ${{details.severity}} @ ${{details.time}}
+                        </div>
+                        <div style="margin-bottom: 4px; color: #8b949e;">
+                            Source: ${{details.source}}
+                        </div>
+                        <div style="word-wrap: break-word;">
+                            ${{details.message}}
+                        </div>
+                    `;
+                    errorTooltip.style.display = 'block';
+                    errorTooltip.style.left = (e.clientX + 15) + 'px';
+                    errorTooltip.style.top = (e.clientY - 10) + 'px';
+                    
+                    // Adjust position if tooltip goes off screen
+                    const tooltipRect = errorTooltip.getBoundingClientRect();
+                    if (tooltipRect.right > window.innerWidth) {{
+                        errorTooltip.style.left = (e.clientX - tooltipRect.width - 15) + 'px';
+                    }}
+                    if (tooltipRect.bottom > window.innerHeight) {{
+                        errorTooltip.style.top = (e.clientY - tooltipRect.height - 10) + 'px';
+                    }}
+                }} else {{
+                    errorTooltip.style.display = 'none';
+                }}
+            }});
+            
+            canvas.addEventListener('mouseleave', function() {{
+                errorTooltip.style.display = 'none';
+            }});
+        }}
+        
+        // Filter annotations by severity level
+        function filterAnnotationsByLevel(annotations, level) {{
+            if (level === 'none') return {{}};
+            if (level === 'all') return annotations;
+            
+            const filtered = {{}};
+            for (const [key, annotation] of Object.entries(annotations)) {{
+                const sevLevel = annotation.errorDetails?.severityLevel;
+                if (sevLevel === undefined) continue;
+                
+                if (level === 'critical' && sevLevel === 4) {{
+                    filtered[key] = annotation;
+                }} else if (level === 'error' && sevLevel >= 3) {{
+                    filtered[key] = annotation;
+                }}
+            }}
+            return filtered;
+        }}
+        
+        // Set error marker level from dropdown
+        function setErrorMarkerLevel(level) {{
+            currentErrorLevel = level;
+            const btnText = document.getElementById('errorMarkerBtnText');
+            const btn = document.getElementById('errorMarkerDropdown');
+            
+            // Update button text and style
+            const levelLabels = {{
+                'none': 'Error Markers: Off',
+                'critical': 'Critical Only',
+                'error': 'Error & Critical',
+                'all': 'All Errors'
+            }};
+            btnText.textContent = levelLabels[level] || 'Error Markers: Off';
+            
+            // Update button style based on level
+            btn.classList.remove('btn-outline-secondary', 'btn-outline-danger', 'btn-outline-warning', 'btn-outline-info');
+            if (level === 'none') {{
+                btn.classList.add('btn-outline-secondary');
+            }} else if (level === 'critical') {{
+                btn.classList.add('btn-outline-danger');
+            }} else if (level === 'error') {{
+                btn.classList.add('btn-outline-warning');
+            }} else {{
+                btn.classList.add('btn-outline-info');
+            }}
+            
+            // Update annotations on all charts
+            for (const [chartId, chart] of Object.entries(chartInstances)) {{
+                if (chart.options.plugins.annotation) {{
+                    const filteredAnnotations = filterAnnotationsByLevel(originalAnnotations[chartId] || {{}}, level);
+                    chart.options.plugins.annotation.annotations = filteredAnnotations;
+                    chart.update('none');  // Update without animation
+                }}
+            }}
+        }}
         
         document.addEventListener('DOMContentLoaded', function() {{
             // Initialize all charts from config
             for (const [chartId, config] of Object.entries(chartConfigs)) {{
                 const canvas = document.getElementById('chart_' + chartId);
                 if (canvas) {{
+                    // Store original annotations before creating chart
+                    if (config.options?.plugins?.annotation?.annotations) {{
+                        originalAnnotations[chartId] = JSON.parse(JSON.stringify(config.options.plugins.annotation.annotations));
+                        // Default: hide all error markers
+                        config.options.plugins.annotation.annotations = {{}};
+                    }}
+                    
                     chartInstances[chartId] = new Chart(canvas.getContext('2d'), config);
+                    
+                    // Setup hover handlers for annotations
+                    setupAnnotationHover(chartInstances[chartId], chartId);
                     
                     // Add double-click to reset zoom
                     canvas.addEventListener('dblclick', function() {{
@@ -738,18 +947,144 @@ class HTMLBuilder:
             if (data) {{
                 document.getElementById('logModalTitle').textContent = data.name;
                 document.getElementById('logModalContent').textContent = data.content;
+                document.getElementById('logContentSearch').value = '';
+                document.getElementById('searchResultCount').textContent = '';
+                currentHighlightIndex = -1;
+                
+                // If there's a search query in the log list, auto-search in content
+                const listSearchQuery = document.getElementById('searchInput').value;
+                if (listSearchQuery) {{
+                    document.getElementById('logContentSearch').value = listSearchQuery;
+                    setTimeout(() => highlightInLog(listSearchQuery), 100);
+                }}
+                
                 const modal = new bootstrap.Modal(document.getElementById('logModal'));
                 modal.show();
             }}
+        }}
+        
+        let currentHighlightIndex = -1;
+        let totalHighlights = 0;
+        let originalLogContent = '';
+        
+        function highlightInLog(query) {{
+            const contentEl = document.getElementById('logModalContent');
+            const countEl = document.getElementById('searchResultCount');
+            
+            // Store original content on first call or restore it
+            if (!originalLogContent || !query) {{
+                originalLogContent = contentEl.textContent;
+            }}
+            
+            if (!query || query.length < 2) {{
+                contentEl.textContent = originalLogContent;
+                countEl.textContent = '';
+                currentHighlightIndex = -1;
+                totalHighlights = 0;
+                return;
+            }}
+            
+            // Escape special HTML characters in original content
+            const escaped = originalLogContent
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+            
+            // Escape regex special characters in query
+            const escapedQuery = query.replace(/[.*+?^${{}}()|[\\]\\\\]/g, '\\\\$&');
+            const regex = new RegExp(`(${{escapedQuery}})`, 'gi');
+            
+            // Count matches
+            const matches = originalLogContent.match(new RegExp(escapedQuery, 'gi'));
+            totalHighlights = matches ? matches.length : 0;
+            
+            if (totalHighlights === 0) {{
+                contentEl.textContent = originalLogContent;
+                countEl.textContent = 'No matches';
+                currentHighlightIndex = -1;
+                return;
+            }}
+            
+            // Highlight matches
+            let matchIndex = 0;
+            const highlighted = escaped.replace(regex, (match) => {{
+                return `<mark class="search-highlight" data-index="${{matchIndex++}}">${{match}}</mark>`;
+            }});
+            
+            contentEl.innerHTML = highlighted;
+            countEl.textContent = `${{totalHighlights}} matches`;
+            
+            // Navigate to first match
+            currentHighlightIndex = -1;
+            navigateHighlight(1);
+        }}
+        
+        function navigateHighlight(direction) {{
+            if (totalHighlights === 0) return;
+            
+            const highlights = document.querySelectorAll('.search-highlight');
+            
+            // Remove current highlight
+            if (currentHighlightIndex >= 0 && highlights[currentHighlightIndex]) {{
+                highlights[currentHighlightIndex].classList.remove('current-highlight');
+            }}
+            
+            // Calculate new index
+            currentHighlightIndex += direction;
+            if (currentHighlightIndex >= totalHighlights) currentHighlightIndex = 0;
+            if (currentHighlightIndex < 0) currentHighlightIndex = totalHighlights - 1;
+            
+            // Highlight current and scroll to it
+            if (highlights[currentHighlightIndex]) {{
+                highlights[currentHighlightIndex].classList.add('current-highlight');
+                highlights[currentHighlightIndex].scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+            }}
+            
+            // Update count display
+            document.getElementById('searchResultCount').textContent = 
+                `${{currentHighlightIndex + 1}} / ${{totalHighlights}}`;
         }}
         
         function filterLogs(query) {{
             const items = document.querySelectorAll('.log-item');
             const lowerQuery = query.toLowerCase();
             
-            items.forEach(item => {{
-                const text = item.textContent.toLowerCase();
-                item.style.display = text.includes(lowerQuery) ? '' : 'none';
+            if (!query) {{
+                // Show all if no query
+                items.forEach(item => item.style.display = '');
+                return;
+            }}
+            
+            // Search in both displayed text AND full content
+            items.forEach((item, index) => {{
+                const displayText = item.textContent.toLowerCase();
+                const fullContent = logData[index]?.content?.toLowerCase() || '';
+                const matches = displayText.includes(lowerQuery) || fullContent.includes(lowerQuery);
+                item.style.display = matches ? '' : 'none';
+                
+                // Add indicator if match is in content but not visible in preview
+                const matchBadge = item.querySelector('.content-match-badge');
+                if (matches && !displayText.includes(lowerQuery) && fullContent.includes(lowerQuery)) {{
+                    if (!matchBadge) {{
+                        const badge = document.createElement('span');
+                        badge.className = 'content-match-badge badge bg-info ms-2';
+                        badge.textContent = 'match in content';
+                        badge.style.fontSize = '10px';
+                        item.querySelector('strong').appendChild(badge);
+                    }}
+                }} else if (matchBadge) {{
+                    matchBadge.remove();
+                }}
+            }});
+        }}
+        
+        function filterErrors(query) {{
+            const rows = document.querySelectorAll('#errorTable tbody tr.error-row');
+            const lowerQuery = query.toLowerCase();
+            
+            rows.forEach(row => {{
+                const text = row.textContent.toLowerCase();
+                row.style.display = text.includes(lowerQuery) ? '' : 'none';
             }});
         }}
     </script>"""

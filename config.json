@@ -1,0 +1,12 @@
+{
+    "chart": {
+        "max_duration_minutes": 10,
+        "max_data_points": 5000
+    },
+    "parsing": {
+        "time_gap_threshold_seconds": 5
+    },
+    "error_detection": {
+        "default_marker_level": "none"
+    }
+}

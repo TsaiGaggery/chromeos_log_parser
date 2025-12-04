@@ -173,6 +173,9 @@ class ChartGenerator:
             timestamp = entry.get('timestamp')
             
             if value is not None and timestamp is not None:
+                # Convert cpuusage from 0-1 to 0-100%
+                if metric == 'cpuusage':
+                    value = value * 100
                 # Format timestamp for Chart.js time axis
                 data_points.append({
                     'x': timestamp.isoformat(),
@@ -246,6 +249,11 @@ class ChartGenerator:
             # Critical errors get thicker lines and label on hover
             is_critical = severity == 4
             
+            # Get error message for hover display
+            error_message = error.get('message', 'Unknown error')[:80]
+            error_source = error.get('source', 'unknown')
+            severity_name = 'CRITICAL' if is_critical else 'ERROR'
+            
             annotation_id = f'error_{i}'
             annotations[annotation_id] = {
                 'type': 'line',
@@ -253,7 +261,7 @@ class ChartGenerator:
                 'xMax': timestamp.isoformat(),
                 'borderColor': color,
                 'borderWidth': 3 if is_critical else 2,
-                'borderDash': [] if is_critical else [5, 5],  # Solid for critical, dashed for error
+                'borderDash': [6, 4] if is_critical else [4, 4],  # All dashed, critical slightly longer dashes
                 'label': {
                     'display': True,
                     'content': 'CRITICAL' if is_critical else 'ERR',
@@ -265,6 +273,14 @@ class ChartGenerator:
                         'weight': 'bold' if is_critical else 'normal',
                     },
                     'padding': 2,
+                },
+                # Store error details for hover tooltip
+                'errorDetails': {
+                    'message': error_message,
+                    'source': error_source,
+                    'severity': severity_name,
+                    'severityLevel': severity,  # Add numeric level for filtering
+                    'time': timestamp.strftime('%H:%M:%S') if hasattr(timestamp, 'strftime') else str(timestamp),
                 }
             }
         
@@ -314,7 +330,7 @@ class ChartGenerator:
                     'color': self.DARK_THEME['text_primary'],
                 },
                 'min': 0,
-                'max': 1,
+                'max': 100,
                 'ticks': {
                     'color': self.DARK_THEME['text_secondary'],
                 },

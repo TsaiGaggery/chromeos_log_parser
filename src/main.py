@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -26,6 +27,71 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.parsers import VmlogParser, GeneratedLogsParser, UserFeedbackParser, TempLoggerParser
 from src.analyzers import ErrorDetector, MetricsAnalyzer
 from src.visualizers import ChartGenerator, HTMLBuilder
+
+
+# Default configuration
+DEFAULT_CONFIG = {
+    "chart": {
+        "max_duration_minutes": 10,
+        "max_data_points": 5000
+    },
+    "parsing": {
+        "time_gap_threshold_seconds": 5
+    },
+    "error_detection": {
+        "default_marker_level": "none"
+    }
+}
+
+
+def load_config(config_path: str = None) -> Dict:
+    """
+    Load configuration from JSON file.
+    Falls back to default config if file not found.
+    
+    Args:
+        config_path: Path to config.json file
+        
+    Returns:
+        Configuration dictionary
+    """
+    config = DEFAULT_CONFIG.copy()
+    
+    # Try to find config.json
+    if config_path is None:
+        # Look in current directory, then script directory
+        possible_paths = [
+            Path("config.json"),
+            Path(__file__).parent.parent / "config.json",
+        ]
+        for p in possible_paths:
+            if p.exists():
+                config_path = str(p)
+                break
+    
+    if config_path and Path(config_path).exists():
+        try:
+            with open(config_path, 'r') as f:
+                user_config = json.load(f)
+            # Deep merge user config into default config
+            for key, value in user_config.items():
+                if key in config and isinstance(config[key], dict) and isinstance(value, dict):
+                    config[key].update(value)
+                else:
+                    config[key] = value
+        except Exception as e:
+            print(f"Warning: Failed to load config from {config_path}: {e}")
+    
+    return config
+
+
+def natural_sort_key(s: str):
+    """
+    Generate a key for natural sorting (e.g., part2 before part10).
+    Splits the string into text and numeric parts for proper ordering.
+    """
+    return [int(text) if text.isdigit() else text.lower() 
+            for text in re.split(r'(\d+)', s)]
 
 
 def parse_arguments():
@@ -83,6 +149,20 @@ Examples:
         type=int,
         default=None,
         help='Reference year for timestamps (default: current year)'
+    )
+    
+    parser.add_argument(
+        '--config',
+        type=str,
+        default=None,
+        help='Path to config.json file (default: auto-detect)'
+    )
+    
+    parser.add_argument(
+        '--max-duration',
+        type=float,
+        default=None,
+        help='Max duration per chart in minutes (overrides config.json)'
     )
     
     return parser.parse_args()
@@ -247,6 +327,55 @@ def split_entries_by_time_gap(entries: List[Dict], max_gap_seconds: float = 5.0)
     return chunks
 
 
+def split_entries_by_max_duration(entries: List[Dict], max_duration_minutes: float = 5.0) -> List[List[Dict]]:
+    """
+    Split vmlog entries into separate chunks when duration exceeds threshold.
+    This ensures each chart covers at most max_duration_minutes for better readability.
+    
+    Args:
+        entries: Sorted list of vmlog entries
+        max_duration_minutes: Maximum duration in minutes per chunk (default: 5 minutes)
+        
+    Returns:
+        List of entry chunks, each chunk covers at most max_duration_minutes
+    """
+    if not entries:
+        return []
+    
+    max_duration_seconds = max_duration_minutes * 60
+    chunks = []
+    current_chunk = []
+    chunk_start_time = None
+    
+    for entry in entries:
+        ts = entry.get('timestamp')
+        if not ts:
+            # If no timestamp, add to current chunk
+            current_chunk.append(entry)
+            continue
+        
+        if chunk_start_time is None:
+            # First entry in chunk
+            chunk_start_time = ts
+            current_chunk.append(entry)
+        else:
+            duration = (ts - chunk_start_time).total_seconds()
+            if duration > max_duration_seconds:
+                # Current chunk exceeds max duration, start a new one
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = [entry]
+                chunk_start_time = ts
+            else:
+                current_chunk.append(entry)
+    
+    # Don't forget the last chunk
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks
+
+
 def filter_thermal_by_timerange(thermal_data: List[Dict], 
                                  start_time: datetime, 
                                  end_time: datetime) -> List[Dict]:
@@ -294,6 +423,14 @@ def main():
     """Main entry point."""
     args = parse_arguments()
     start_time = time.time()
+    
+    # Load configuration
+    config = load_config(args.config)
+    
+    # Get chart settings from config (CLI args override config file)
+    max_chart_duration = args.max_duration if args.max_duration else config['chart']['max_duration_minutes']
+    max_data_points = args.max_points if args.max_points != 5000 else config['chart']['max_data_points']
+    time_gap_threshold = config['parsing']['time_gap_threshold_seconds']
     
     # Validate input
     input_path = args.input
@@ -346,6 +483,8 @@ def main():
     chart_gen = ChartGenerator()
     segment_data = {}  # segment_name -> {'entries': [], 'start_time': dt, 'end_time': dt}
     
+    log_message(f"Chart settings: max duration = {max_chart_duration} min, time gap threshold = {time_gap_threshold} sec", args.verbose)
+    
     for file_group_name, segment_info in vmlog_segments.items():
         # Collect all entries from files in this group
         all_entries = []
@@ -360,17 +499,26 @@ def main():
         # Sort by timestamp
         all_entries.sort(key=lambda x: x.get('timestamp', datetime.min))
         
-        # Split into chunks by time gaps (>5 seconds = new chart)
-        chunks = split_entries_by_time_gap(all_entries, max_gap_seconds=5.0)
-        log_message(f"  [{file_group_name}] Split into {len(chunks)} continuous segments", args.verbose)
+        # Split into chunks by time gaps (configurable threshold)
+        gap_chunks = split_entries_by_time_gap(all_entries, max_gap_seconds=time_gap_threshold)
+        log_message(f"  [{file_group_name}] Split into {len(gap_chunks)} continuous segments by time gaps", args.verbose)
+        
+        # Further split by max duration (configurable)
+        all_chunks = []
+        for gap_chunk in gap_chunks:
+            duration_chunks = split_entries_by_max_duration(gap_chunk, max_duration_minutes=max_chart_duration)
+            all_chunks.extend(duration_chunks)
+        
+        if len(all_chunks) > len(gap_chunks):
+            log_message(f"  [{file_group_name}] Further split into {len(all_chunks)} segments by {max_chart_duration}-min max duration", args.verbose)
         
         # Create separate segment for each chunk
-        for chunk_idx, chunk_entries in enumerate(chunks):
+        for chunk_idx, chunk_entries in enumerate(all_chunks):
             if not chunk_entries:
                 continue
             
             # Generate segment name
-            if len(chunks) == 1:
+            if len(all_chunks) == 1:
                 segment_name = file_group_name
             else:
                 segment_name = f"{file_group_name}_part{chunk_idx + 1}"
@@ -378,17 +526,24 @@ def main():
             seg_start_time = chunk_entries[0].get('timestamp')
             seg_end_time = chunk_entries[-1].get('timestamp')
             
+            # Calculate duration for logging
+            if seg_start_time and seg_end_time:
+                duration_secs = (seg_end_time - seg_start_time).total_seconds()
+                duration_str = f"{duration_secs/60:.1f}min"
+            else:
+                duration_str = "unknown"
+            
             # Sample if too large
-            if len(chunk_entries) > args.max_points:
-                log_message(f"    [{segment_name}] Sampling from {len(chunk_entries)} to {args.max_points} points", args.verbose)
-                chunk_entries = chart_gen.sample_data(chunk_entries, args.max_points)
+            if len(chunk_entries) > max_data_points:
+                log_message(f"    [{segment_name}] Sampling from {len(chunk_entries)} to {max_data_points} points", args.verbose)
+                chunk_entries = chart_gen.sample_data(chunk_entries, max_data_points)
             
             segment_data[segment_name] = {
                 'entries': chunk_entries,
                 'start_time': seg_start_time,
                 'end_time': seg_end_time
             }
-            log_message(f"    [{segment_name}] {len(chunk_entries)} entries, {seg_start_time} ~ {seg_end_time}", args.verbose)
+            log_message(f"    [{segment_name}] {len(chunk_entries)} entries, {duration_str}, {seg_start_time} ~ {seg_end_time}", args.verbose)
     
     log_message(f"Total segments after splitting: {len(segment_data)}", args.verbose)
     
@@ -439,8 +594,8 @@ def main():
     charts_config = []
     total_thermal_entries = 0
     
-    # Create charts for each vmlog segment
-    for segment_name in sorted(segment_data.keys()):
+    # Create charts for each vmlog segment (use natural sort for proper part ordering)
+    for segment_name in sorted(segment_data.keys(), key=natural_sort_key):
         seg_info = segment_data[segment_name]
         entries = seg_info['entries']
         seg_start = seg_info['start_time']
@@ -484,8 +639,8 @@ def main():
         if segment_thermal:
             total_thermal_entries += len(segment_thermal)
             # Sample if too large
-            if len(segment_thermal) > args.max_points // 2:
-                segment_thermal = chart_gen.sample_data(segment_thermal, args.max_points // 2)
+            if len(segment_thermal) > max_data_points // 2:
+                segment_thermal = chart_gen.sample_data(segment_thermal, max_data_points // 2)
             
             thermal_chart = chart_gen.create_thermal_chart(
                 segment_thermal,

@@ -1,29 +1,27 @@
 # ChromeOS Log Analyzer
 
-A Python tool for parsing, analyzing, and visualizing ChromeOS logs. Generates interactive HTML reports with time-series charts and error markers.
+A Python tool for parsing, analyzing, and visualizing ChromeOS logs. Generates interactive HTML reports with time-series charts, error markers, and log browsing capabilities.
 
 ## Features
 
-- **Multi-format Support**: Parse both `generated_logs` directory structures and user feedback text files
-- **vmlog Visualization**: Interactive time-series charts for CPU usage and frequencies
-  - Separate charts for each vmlog segment (LATEST, PREVIOUS, etc.)
-  - CPU frequency values converted from kHz to MHz for readability
-- **Thermal Monitoring**: Parse temp_logger from `/var/log/messages` for thermal temperature visualization
-- **Error Detection**: Automatically scan logs for errors, warnings, and critical issues
-- **Error Timeline**: Mark detected errors on the vmlog timeline chart
-- **Self-contained HTML**: Generate single-file HTML reports with embedded data and charts
-- **Search & Browse**: Search through all log files directly in the report
+- **Multiple Input Formats**: Supports generated_logs directories, ZIP archives, and user feedback text files
+- **Auto-Detection**: Automatically identifies input format
+- **Interactive Charts**: Time-series visualization of CPU, memory, swap, and thermal data using Chart.js
+- **Error Detection**: Identifies critical errors, warnings, and failures with timeline markers
+- **Log Browser**: Searchable log viewer with keyword highlighting
+- **Self-Contained Output**: Single HTML file with embedded CSS, JavaScript, and data
+- **Configurable**: JSON-based configuration with CLI overrides
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/user/chromeos_log_parser.git
 cd chromeos_log_parser
 
 # Create virtual environment (optional but recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python3 -m venv venv
+source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -50,64 +48,72 @@ python -m src.main -i logs/ -o report.html --verbose
 ### Command Line Options
 
 ```
--i, --input      Input path: directory, ZIP file, or text file (required)
--o, --output     Output HTML report path (default: chromeos_log_report.html)
--t, --type       Log type: auto, generated, or feedback (default: auto)
--v, --verbose    Enable verbose output
---max-points     Maximum chart data points (default: 5000)
---year           Reference year for timestamps (default: current year)
+-i, --input       Input path: directory, ZIP file, or text file (required)
+-o, --output      Output HTML report path (default: chromeos_log_report.html)
+-t, --type        Log type: auto, generated, or feedback (default: auto)
+-v, --verbose     Enable verbose output
+--max-points      Maximum chart data points (default: from config.json)
+--max-duration    Maximum chart duration in minutes (default: from config.json)
+--year            Reference year for timestamps (default: current year)
+--config          Path to config.json file (default: auto-detect)
 ```
+
+### Configuration
+
+Settings can be customized via `config.json`:
+
+```json
+{
+    "chart": {
+        "max_duration_minutes": 10,
+        "max_data_points": 5000
+    },
+    "parsing": {
+        "time_gap_threshold_seconds": 5
+    },
+    "error_detection": {
+        "default_marker_level": "none"
+    }
+}
+```
+
+CLI arguments override config file settings.
 
 ## Generated Report
 
 The HTML report includes:
 
-1. **CPU Charts**: One chart per vmlog segment showing:
-   - CPU usage percentage
-   - CPU frequencies (cpufreq0-3) in MHz
-
-2. **Thermal Chart**: Temperature data from all thermal zones:
-   - x86_pkg_temp, INT3400_Thermal, TSR0, TSR1, etc.
-
-3. **Error Summary**: Grouped by severity (Critical, Error, Warning, Info)
-
-4. **Log Browser**: Search and view all parsed log files
+1. **System Info**: ChromeOS version, board, and metadata
+2. **Error Summary**: Categorized errors with search and filter capabilities
+3. **Time-Series Charts**: 
+   - CPU usage (0-100%)
+   - Memory usage
+   - Swap usage
+   - Thermal data (temperature zones)
+4. **Log Browser**: Full log content with search and keyword highlighting
+5. **Interactive Features**:
+   - Chart zoom and pan
+   - Error marker toggle (on/off)
+   - Error level filter (none/error/critical/all)
+   - Hover tooltips for error details
 
 ## Supported Log Formats
 
-### Generated Logs Structure
+### Generated Logs Format
+
+Directory structure from ChromeOS feedback:
 
 ```
 generated_logs/
-├── feedback/
-│   ├── vmlog.1.LATEST
-│   ├── vmlog.1.PREVIOUS
-│   ├── vmlog.1.3
-│   ├── syslog
-│   ├── chrome_system_log
-│   └── ...
-├── var/log/
+├── var_log/
 │   ├── messages
-│   ├── messages.1
-│   └── ...
-└── home/chronos/user/log/
-    └── ...
-```
-
-### vmlog Format
-
-```
-time pgmajfault pgmajfault_f pgmajfault_a pswpin pswpout cpuusage cpufreq0 cpufreq1 cpufreq2 cpufreq3
-[1027/124537] 0 0 0 0 0 0.02 700000 700000 700000 1246034
-```
-
-- Timestamp `[MMDD/HHMMSS]`: 10月27日 12:45:37 UTC
-- cpufreq values in kHz: 700000 = 700 MHz, 1246034 = 1246.034 MHz
-
-### temp_logger Format (from /var/log/messages)
-
-```
-2025-10-27T07:44:13.519238Z NOTICE temp_logger[4157]: x86_pkg_temp:55C INT3400_Thermal:20C TSR0:44C TSR1:56C
+│   ├── vmlog/
+│   │   ├── vmlog.LATEST
+│   │   └── vmlog.PREVIOUS
+│   └── temp_logger/
+│       └── temp_logger
+├── lsb-release
+└── etc/
 ```
 
 ### User Feedback Format
@@ -130,28 +136,56 @@ syslog=<multiline>
 ---------- END ----------
 ```
 
+## Architecture
+
+```
+Input (ZIP/Directory/Text)
+         │
+         ▼
+┌─────────────────┐
+│  Parser Layer   │  ─── Normalization & Extraction
+└─────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Analyzer Layer  │  ─── Pattern Detection & Statistics
+└─────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│Visualizer Layer │  ─── Chart Generation & HTML Assembly
+└─────────────────┘
+         │
+         ▼
+   HTML Report (Single file)
+```
+
+See [docs/specs/architecture.md](docs/specs/architecture.md) for detailed architecture documentation.
+
 ## Project Structure
 
 ```
 chromeos_log_parser/
 ├── src/
+│   ├── main.py                   # CLI entry point
 │   ├── parsers/
-│   │   ├── vmlog_parser.py       # Parse vmlog time-series data
-│   │   ├── generated_logs_parser.py  # Parse directory structures
-│   │   └── user_feedback_parser.py   # Parse feedback text files
+│   │   ├── generated_logs_parser.py
+│   │   ├── user_feedback_parser.py
+│   │   ├── vmlog_parser.py
+│   │   └── temp_logger_parser.py
 │   ├── analyzers/
-│   │   ├── error_detector.py     # Scan for error patterns
-│   │   └── metrics_analyzer.py   # Analyze vmlog statistics
-│   ├── visualizers/
-│   │   ├── chart_generator.py    # Generate Chart.js config
-│   │   └── html_builder.py       # Build HTML report
-│   └── main.py                   # CLI entry point
+│   │   ├── error_detector.py
+│   │   └── metrics_analyzer.py
+│   └── visualizers/
+│       ├── chart_generator.py
+│       └── html_builder.py
 ├── tests/
-│   ├── fixtures.py               # Test data
-│   ├── test_parsers.py           # Parser tests
-│   └── test_analyzers.py         # Analyzer tests
+│   ├── fixtures.py               # Sample log data
+│   ├── test_parsers.py
+│   └── test_analyzers.py
 ├── docs/
 │   └── specs/                    # Specification documents
+├── config.json                   # Default configuration
 ├── requirements.txt
 └── README.md
 ```
@@ -162,36 +196,48 @@ chromeos_log_parser/
 # Run all tests
 pytest tests/ -v
 
+# Run specific test file
+pytest tests/test_parsers.py -v
+
 # Run with coverage
 pytest tests/ --cov=src --cov-report=html
 ```
 
 ## HTML Report Features
 
-The generated HTML report includes:
+### Chart Interactions
+- **Zoom**: Mouse wheel or pinch gesture
+- **Pan**: Click and drag
+- **Reset**: Double-click to reset view
+- **Error Markers**: Toggle visibility with dropdown selector
 
-1. **Header Section**: ChromeOS version, board info, and generation timestamp
-2. **Timeline Chart**: Interactive vmlog metrics visualization
-   - CPU usage (percentage)
-   - CPU frequencies (MHz)
-   - Error markers as vertical lines
-   - Zoom and pan controls
-3. **Error Summary**: Table of all detected errors with:
-   - Severity levels (Critical, Error, Warning, Info)
-   - Timestamps and source files
-   - Click to expand for context
-4. **Log Browser**: Searchable list of all log files
-   - Click to view full content
-   - File size information
+### Search Features
+- **Error Summary**: Filter errors by keyword
+- **Log Browser**: Search within log content with match highlighting
+- **Navigation**: Previous/Next buttons to jump between matches
+
+### Error Level Filter
+- **None**: Hide all error markers on charts
+- **Error**: Show ERROR and WARNING level markers
+- **Critical**: Show only CRITICAL and FATAL markers
+- **All**: Show all detected error markers
 
 ## Error Patterns Detected
 
-- `ERROR`, `FATAL`, `CRASH`
-- `WARNING`, `WARN`
-- `FAILED`, `failure`
-- `timeout`, `refused`, `denied`
-- `panic`, `OOM`, `Out of memory`
-- `killed`, `CRITICAL`
+The analyzer detects the following error patterns in logs:
+
+| Level | Patterns |
+|-------|----------|
+| Critical | `FATAL`, `CRASH`, `panic`, `OOM`, `Out of memory`, `killed`, `CRITICAL` |
+| Error | `ERROR`, `FAILED`, `failure`, `timeout`, `refused`, `denied` |
+| Warning | `WARNING`, `WARN` |
+
+## Performance
+
+- **Target Processing Time**: <60 seconds for typical logs
+- **Input Size**: Up to 500MB
+- **Output Size**: <10MB HTML file
+- **Data Sampling**: Automatic sampling for large datasets
 
 ## License
 

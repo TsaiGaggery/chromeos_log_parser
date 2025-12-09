@@ -366,6 +366,91 @@ class ChartGenerator:
         
         return annotations
     
+    def _create_system_annotations(self, system_events: Dict[str, List[Dict]]) -> Dict:
+        """
+        Create Chart.js annotation objects for system log events.
+        Shows vertical lines for events from messages, net, powerd, typecd, etc.
+        
+        Args:
+            system_events: Dict mapping log_type to list of events
+            
+        Returns:
+            Dictionary of annotation configurations
+        """
+        from datetime import timedelta
+        
+        annotations = {}
+        
+        # Track timestamps to offset duplicates
+        seen_timestamps = {}
+        
+        for log_type, events in system_events.items():
+            if not events:
+                continue
+            
+            # Sort by level (highest first)
+            sorted_events = sorted(events, key=lambda x: x.get('level', 1), reverse=True)
+            
+            for i, event in enumerate(sorted_events):
+                timestamp = event.get('timestamp')
+                if not timestamp:
+                    continue
+                
+                # Offset duplicate timestamps
+                ts_key = timestamp.isoformat()
+                if ts_key in seen_timestamps:
+                    seen_timestamps[ts_key] += 1
+                    timestamp = timestamp + timedelta(milliseconds=100 * seen_timestamps[ts_key])
+                else:
+                    seen_timestamps[ts_key] = 0
+                
+                category = event.get('category', log_type.upper())
+                level = event.get('level', 1)
+                color = event.get('color', 'rgba(139, 148, 158, 0.8)')  # Default gray
+                
+                # Make color more opaque
+                if color.startswith('rgb('):
+                    color = color.replace('rgb(', 'rgba(').replace(')', ', 0.8)')
+                
+                # Get event message for hover display
+                event_message = event.get('message', '')[:100]
+                
+                # Higher level events get thicker lines
+                line_width = 1 + min(level, 2)
+                
+                annotation_id = f'sys_{log_type}_{i}'
+                annotations[annotation_id] = {
+                    'type': 'line',
+                    'xMin': timestamp.isoformat(),
+                    'xMax': timestamp.isoformat(),
+                    'borderColor': color,
+                    'borderWidth': line_width,
+                    'borderDash': [5, 5],  # Different dash pattern than EC
+                    'label': {
+                        'display': True,
+                        'content': category[:5],  # Short label
+                        'position': 'end',
+                        'backgroundColor': color,
+                        'color': '#ffffff',
+                        'font': {
+                            'size': 8,
+                            'weight': 'normal',
+                        },
+                        'padding': 2,
+                    },
+                    # Store system event details for hover tooltip
+                    'systemDetails': {
+                        'logType': log_type,
+                        'category': category,
+                        'message': event_message,
+                        'level': level,
+                        'source': event.get('source', ''),
+                        'time': timestamp.strftime('%H:%M:%S') if hasattr(timestamp, 'strftime') else str(timestamp),
+                    }
+                }
+        
+        return annotations
+    
     def _create_scales(self, metrics: List[str]) -> Dict:
         """
         Create multi-axis scale configuration.
@@ -506,6 +591,7 @@ class ChartGenerator:
     
     def create_cpu_usage_chart(self, vmlog_data: List[Dict], errors: List[Dict] = None,
                                ec_events: List[Dict] = None,
+                               system_events: Dict[str, List[Dict]] = None,
                                chart_id: str = "cpu_chart", 
                                title: str = "CPU Usage & Frequency") -> Dict:
         """
@@ -515,6 +601,7 @@ class ChartGenerator:
             vmlog_data: Parsed vmlog entries
             errors: Error entries with timestamps
             ec_events: EC (Embedded Controller) events from cros_ec.log
+            system_events: Dict of log_type -> events from system logs
             chart_id: Unique ID for this chart
             title: Chart title
             
@@ -547,8 +634,13 @@ class ChartGenerator:
         if ec_events:
             ec_annotations = self._create_ec_annotations(ec_events)
         
+        # Create system event annotations (stored separately for independent toggling per log type)
+        system_annotations = {}
+        if system_events:
+            system_annotations = self._create_system_annotations(system_events)
+        
         # Combine all annotations
-        annotations = {**error_annotations, **ec_annotations}
+        annotations = {**error_annotations, **ec_annotations, **system_annotations}
         
         config = {
             'type': 'line',

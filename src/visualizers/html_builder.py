@@ -78,10 +78,10 @@ class HTMLBuilder:
         # Build sections
         head_section = self._build_head()
         header_section = self._build_header(metadata or parsed_data.get('metadata', {}))
-        chart_section = self._build_multi_chart_section(charts, thermal_chart)
+        chart_section = self._build_multi_chart_section(charts, thermal_chart, metadata)
         error_summary_section = self._build_error_summary(errors)
         log_browser_section = self._build_log_browser(parsed_data.get('logs', {}))
-        scripts_section = self._build_multi_chart_scripts(charts, thermal_chart)
+        scripts_section = self._build_multi_chart_scripts(charts, thermal_chart, metadata)
         
         # Combine into full HTML
         html_content = f"""<!DOCTYPE html>
@@ -446,6 +446,79 @@ class HTMLBuilder:
             color: var(--accent-cyan);
             text-shadow: 0 0 10px rgba(57, 197, 207, 0.3);
         }
+        
+        /* System log buttons */
+        .btn-syslog-critical {
+            background-color: rgba(248, 81, 73, 0.2);
+            border: 1px solid var(--accent-red);
+            color: var(--accent-red);
+        }
+        .btn-syslog-critical:hover {
+            background-color: rgba(248, 81, 73, 0.4);
+            border-color: var(--accent-red);
+            color: var(--accent-red);
+        }
+        .btn-syslog-critical.active {
+            background-color: var(--accent-red);
+            border-color: var(--accent-red);
+            color: #fff;
+            box-shadow: 0 0 10px rgba(248, 81, 73, 0.5);
+        }
+        
+        .btn-syslog-error {
+            background-color: rgba(210, 153, 34, 0.2);
+            border: 1px solid var(--accent-orange);
+            color: var(--accent-orange);
+        }
+        .btn-syslog-error:hover {
+            background-color: rgba(210, 153, 34, 0.4);
+            border-color: var(--accent-orange);
+            color: var(--accent-orange);
+        }
+        .btn-syslog-error.active {
+            background-color: var(--accent-orange);
+            border-color: var(--accent-orange);
+            color: #000;
+            box-shadow: 0 0 10px rgba(210, 153, 34, 0.5);
+        }
+        
+        .btn-syslog-warning {
+            background-color: rgba(201, 203, 207, 0.1);
+            border: 1px solid var(--text-muted);
+            color: var(--text-secondary);
+        }
+        .btn-syslog-warning:hover {
+            background-color: rgba(201, 203, 207, 0.2);
+            border-color: var(--text-secondary);
+            color: var(--text-primary);
+        }
+        .btn-syslog-warning.active {
+            background-color: var(--text-muted);
+            border-color: var(--text-secondary);
+            color: var(--bg-primary);
+            box-shadow: 0 0 10px rgba(201, 203, 207, 0.3);
+        }
+        
+        .btn-syslog-normal {
+            background-color: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+        }
+        .btn-syslog-normal:hover {
+            background-color: var(--bg-tertiary);
+            border-color: var(--text-muted);
+            color: var(--text-primary);
+        }
+        .btn-syslog-normal.active {
+            background-color: var(--bg-tertiary);
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
+            box-shadow: 0 0 8px rgba(57, 197, 207, 0.3);
+        }
+        
+        .syslog-label {
+            font-size: 11px;
+        }
 """
     
     def _build_header(self, metadata: Dict) -> str:
@@ -485,9 +558,9 @@ class HTMLBuilder:
     
     def _build_chart_section(self, chart_config: Dict) -> str:
         """Build chart container section (legacy single chart)."""
-        return self._build_multi_chart_section([{'id': 'main', 'title': 'Main', 'config': chart_config, 'type': 'cpu'}])
+        return self._build_multi_chart_section([{'id': 'main', 'title': 'Main', 'config': chart_config, 'type': 'cpu'}], None, None)
     
-    def _build_multi_chart_section(self, charts: List[Dict], thermal_chart: Dict = None) -> str:
+    def _build_multi_chart_section(self, charts: List[Dict], thermal_chart: Dict = None, metadata: Dict = None) -> str:
         """
         Build multiple chart containers.
         Groups CPU and Thermal charts by their segment.
@@ -511,8 +584,57 @@ class HTMLBuilder:
             elif chart_type == 'thermal':
                 segments[segment]['thermal'] = chart
         
+        # Get system event severity for button coloring
+        severity_data = (metadata or {}).get('system_event_severity', {})
+        system_event_counts = (metadata or {}).get('system_events', {})
+        
+        # Define log types with their display info
+        log_type_info = {
+            'messages': {'icon': '📋', 'label': 'Messages'},
+            'net': {'icon': '📶', 'label': 'Network'},
+            'powerd': {'icon': '🔋', 'label': 'Power'},
+            'typecd': {'icon': '🔌', 'label': 'Type-C'},
+            'bluetooth': {'icon': '📻', 'label': 'Bluetooth'},
+            'ui': {'icon': '🖼️', 'label': 'UI'},
+            'chrome': {'icon': '🌐', 'label': 'Chrome'},
+            'fwupd': {'icon': '⚙️', 'label': 'Firmware'},
+        }
+        
+        # Build individual buttons for each log type
+        system_log_buttons = ""
+        for log_type, info in log_type_info.items():
+            count = system_event_counts.get(log_type, 0)
+            sev = severity_data.get(log_type, {})
+            critical = sev.get('critical', 0)
+            error = sev.get('error', 0)
+            warning = sev.get('warning', 0)
+            
+            # Determine button color based on severity
+            # critical -> red, error -> orange, warning -> yellow, else -> secondary
+            if critical > 0:
+                btn_class = 'btn-syslog-critical'
+                severity_badge = f'<span class="badge bg-danger ms-1">{critical}</span>'
+            elif error > 0:
+                btn_class = 'btn-syslog-error'
+                severity_badge = f'<span class="badge bg-warning text-dark ms-1">{error}</span>'
+            elif warning > 0:
+                btn_class = 'btn-syslog-warning'
+                severity_badge = ''
+            else:
+                btn_class = 'btn-syslog-normal'
+                severity_badge = ''
+            
+            # Only show button if there are events
+            if count > 0:
+                system_log_buttons += f'''
+                    <button class="btn btn-sm {btn_class}" id="syslog_btn_{log_type}" onclick="toggleSystemLog('{log_type}')" title="{count} events">
+                        <span>{info['icon']}</span>
+                        <span class="syslog-label">{info['label']}</span>
+                        {severity_badge}
+                    </button>'''
+        
         # Build section for each vmlog segment
-        sections_html += """
+        sections_html += f"""
         <div class="row mt-4">
             <div class="col-12">
                 <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
@@ -538,6 +660,10 @@ class HTMLBuilder:
                         </svg>
                         <span id="ecEventsBtnText">EC Events: Off</span>
                     </button>
+                    <!-- Separator -->
+                    <span class="text-muted mx-1">|</span>
+                    <!-- System Log Buttons -->
+                    {system_log_buttons}
                 </div>
             </div>
         </div>"""
@@ -721,15 +847,16 @@ class HTMLBuilder:
     
     def _build_scripts(self, chart_config: Dict) -> str:
         """Build JavaScript section (legacy single chart)."""
-        return self._build_multi_chart_scripts([{'id': 'main', 'title': 'Main', 'config': chart_config, 'type': 'cpu'}])
+        return self._build_multi_chart_scripts([{'id': 'main', 'title': 'Main', 'config': chart_config, 'type': 'cpu'}], None, None)
     
-    def _build_multi_chart_scripts(self, charts: List[Dict], thermal_chart: Dict = None) -> str:
+    def _build_multi_chart_scripts(self, charts: List[Dict], thermal_chart: Dict = None, metadata: Dict = None) -> str:
         """
         Build JavaScript section for multiple charts.
         
         Args:
             charts: List of chart configs, each with 'id', 'title', 'config', 'type'
             thermal_chart: Legacy thermal chart parameter
+            metadata: Optional metadata with system event severity info
         """
         # Build chart configs dictionary for JavaScript
         chart_configs_dict = {}
@@ -756,6 +883,18 @@ class HTMLBuilder:
         const originalEcAnnotations = {{}};  // Store EC event annotations separately
         let currentErrorLevel = 'none';  // Default: hide all error markers
         let ecEventsEnabled = false;  // Default: hide EC events
+        
+        // System log toggle states (default: all off)
+        const systemLogStates = {{
+            messages: false,
+            net: false,
+            powerd: false,
+            typecd: false,
+            bluetooth: false,
+            ui: false,
+            chrome: false,
+            fwupd: false
+        }};
         
         // Create custom tooltip element for error annotations
         function createErrorTooltip() {{
@@ -797,7 +936,7 @@ class HTMLBuilder:
                 
                 for (const [key, annotation] of Object.entries(annotations)) {{
                     // Skip annotations without details
-                    if (!annotation.errorDetails && !annotation.ecDetails) continue;
+                    if (!annotation.errorDetails && !annotation.ecDetails && !annotation.systemDetails) continue;
                     
                     // Get the x position of the annotation line
                     const xScale = chart.scales.x;
@@ -836,6 +975,30 @@ class HTMLBuilder:
                             </div>
                             <div style="margin-bottom: 4px; color: #8b949e;">
                                 Level: ${{levelNames[details.level] || 'INFO'}}
+                            </div>
+                            <div style="word-wrap: break-word;">
+                                ${{details.message}}
+                            </div>
+                        `;
+                    }} else if (foundAnnotation.systemDetails) {{
+                        const details = foundAnnotation.systemDetails;
+                        const logTypeNames = {{
+                            messages: '📋 System',
+                            net: '📶 Network',
+                            powerd: '🔋 Power',
+                            typecd: '🔌 Type-C',
+                            bluetooth: '📻 Bluetooth',
+                            ui: '🖼️ UI',
+                            chrome: '🌐 Chrome',
+                            fwupd: '⚙️ Firmware'
+                        }};
+                        const levelColors = {{1: '#8b949e', 2: '#d29922', 3: '#58a6ff', 4: '#f85149'}};
+                        tooltipContent = `
+                            <div style="margin-bottom: 6px; color: ${{levelColors[details.level] || '#58a6ff'}}; font-weight: bold;">
+                                ${{logTypeNames[details.logType] || details.logType}}: ${{details.category}} @ ${{details.time}}
+                            </div>
+                            <div style="margin-bottom: 4px; color: #8b949e;">
+                                Source: ${{details.source || details.logType}}
                             </div>
                             <div style="word-wrap: break-word;">
                                 ${{details.message}}
@@ -899,11 +1062,72 @@ class HTMLBuilder:
             return filtered;
         }}
         
-        // Combine error and EC annotations based on current settings
+        // Filter system log annotations by log type
+        function filterSystemAnnotations(annotations) {{
+            const filtered = {{}};
+            for (const [key, annotation] of Object.entries(annotations)) {{
+                if (key.startsWith('sys_') && annotation.systemDetails) {{
+                    const logType = annotation.systemDetails.logType;
+                    if (systemLogStates[logType]) {{
+                        filtered[key] = annotation;
+                    }}
+                }}
+            }}
+            return filtered;
+        }}
+        
+        // Combine error, EC, and system annotations based on current settings
         function getCombinedAnnotations(chartId) {{
             const errorAnnotations = filterAnnotationsByLevel(originalAnnotations[chartId] || {{}}, currentErrorLevel);
             const ecAnnotations = ecEventsEnabled ? filterEcAnnotations(originalAnnotations[chartId] || {{}}) : {{}};
-            return {{...errorAnnotations, ...ecAnnotations}};
+            const systemAnnotations = filterSystemAnnotations(originalAnnotations[chartId] || {{}});
+            return {{...errorAnnotations, ...ecAnnotations, ...systemAnnotations}};
+        }}
+        
+        // Toggle system log on/off
+        function toggleSystemLog(logType) {{
+            systemLogStates[logType] = !systemLogStates[logType];
+            
+            // Update button active state
+            const btn = document.getElementById('syslog_btn_' + logType);
+            if (btn) {{
+                if (systemLogStates[logType]) {{
+                    btn.classList.add('active');
+                }} else {{
+                    btn.classList.remove('active');
+                }}
+            }}
+            
+            // Update annotations on all charts
+            for (const [chartId, chart] of Object.entries(chartInstances)) {{
+                if (chart.options.plugins.annotation) {{
+                    chart.options.plugins.annotation.annotations = getCombinedAnnotations(chartId);
+                    chart.update('none');
+                }}
+            }}
+        }}
+        
+        // Toggle all system logs on or off
+        function toggleAllSystemLogs(enable) {{
+            for (const logType of Object.keys(systemLogStates)) {{
+                systemLogStates[logType] = enable;
+                const btn = document.getElementById('syslog_btn_' + logType);
+                if (btn) {{
+                    if (enable) {{
+                        btn.classList.add('active');
+                    }} else {{
+                        btn.classList.remove('active');
+                    }}
+                }}
+            }}
+            
+            // Update annotations on all charts
+            for (const [chartId, chart] of Object.entries(chartInstances)) {{
+                if (chart.options.plugins.annotation) {{
+                    chart.options.plugins.annotation.annotations = getCombinedAnnotations(chartId);
+                    chart.update('none');
+                }}
+            }}
         }}
         
         // Toggle EC events on/off

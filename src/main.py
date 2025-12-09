@@ -24,7 +24,7 @@ from typing import Dict, List, Tuple, Any, Optional
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.parsers import VmlogParser, GeneratedLogsParser, UserFeedbackParser, TempLoggerParser, CrosEcParser
+from src.parsers import VmlogParser, GeneratedLogsParser, UserFeedbackParser, TempLoggerParser, CrosEcParser, SystemLogParser
 from src.analyzers import ErrorDetector, MetricsAnalyzer
 from src.visualizers import ChartGenerator, HTMLBuilder
 
@@ -612,6 +612,50 @@ def main():
     log_message(f"Total EC events: {len(all_ec_events)}", args.verbose)
     
     # ========================================
+    # Parse system logs (messages, net, powerd, typecd, bluetooth, ui, chrome, fwupd)
+    # ========================================
+    log_message("Parsing system logs...", args.verbose)
+    
+    system_log_parser = SystemLogParser(reference_year=args.year, min_level=2)
+    system_events = {}  # log_type -> list of events
+    
+    # Supported log types and their file patterns
+    log_file_patterns = {
+        'messages': ['messages', '/var/log/messages'],
+        'net': ['net.log'],
+        'powerd': ['powerd', 'power_manager'],
+        'typecd': ['typecd.log'],
+        'bluetooth': ['bluetooth.log'],
+        'ui': ['/ui/ui.', 'ui.latest'],
+        'chrome': ['/chrome/chrome'],
+        'fwupd': ['fwupd.log']
+    }
+    
+    for log_name, content in logs.items():
+        log_type = system_log_parser.detect_log_type(log_name)
+        if log_type:
+            try:
+                events = system_log_parser.parse_content(content, log_type)
+                if events:
+                    if log_type not in system_events:
+                        system_events[log_type] = []
+                    system_events[log_type].extend(events)
+                    log_message(f"  Extracted {len(events)} {log_type} events from {os.path.basename(log_name)}", args.verbose)
+            except Exception as e:
+                log_message(f"  Warning: Failed to parse {log_type} events from {log_name}: {e}", args.verbose)
+    
+    # Map system events to vmlog timeline
+    for log_type in system_events:
+        system_events[log_type] = system_log_parser.map_to_vmlog_timeline(
+            system_events[log_type], all_vmlog_data
+        )
+        # Sort by timestamp
+        system_events[log_type].sort(key=lambda x: x.get('timestamp', datetime.min))
+    
+    total_system_events = sum(len(events) for events in system_events.values())
+    log_message(f"Total system events: {total_system_events} ({', '.join(f'{k}:{len(v)}' for k, v in system_events.items())})", args.verbose)
+    
+    # ========================================
     # Generate multi-chart configuration
     # Each vmlog segment gets: CPU chart + Thermal chart (if matching data)
     # ========================================
@@ -622,6 +666,8 @@ def main():
     
     # Track which EC events have been assigned to avoid duplicates across charts
     assigned_ec_events = set()
+    # Track which system events have been assigned
+    assigned_system_events = {log_type: set() for log_type in system_events}
     
     # Create charts for each vmlog segment (use natural sort for proper part ordering)
     for segment_name in sorted(segment_data.keys(), key=natural_sort_key):
@@ -658,18 +704,36 @@ def main():
                 segment_ec_events.append(e)
                 assigned_ec_events.add(event_key)
         
-        # Create CPU usage + frequency chart with error and EC annotations
+        # Filter system events for this time range (only include if not already assigned)
+        segment_system_events = {}
+        for log_type, events in system_events.items():
+            segment_system_events[log_type] = []
+            for e in events:
+                if e.get('timestamp') is None:
+                    continue
+                if not (seg_start - buffer <= e['timestamp'] <= seg_end + buffer):
+                    continue
+                event_key = (e.get('timestamp').isoformat() if e.get('timestamp') else '', e.get('message', ''))
+                if event_key not in assigned_system_events[log_type]:
+                    segment_system_events[log_type].append(e)
+                    assigned_system_events[log_type].add(event_key)
+        
+        # Create CPU usage + frequency chart with error, EC, and system event annotations
         cpu_chart = chart_gen.create_cpu_usage_chart(
             entries,
             errors=segment_errors,
             ec_events=segment_ec_events,
+            system_events=segment_system_events,
             chart_id=f'cpu_{segment_name.replace("-", "_")}',
             title=f'CPU Usage & Frequency - vmlog.{segment_name}'
         )
         cpu_chart['type'] = 'cpu'
         cpu_chart['segment'] = segment_name
         charts_config.append(cpu_chart)
-        log_message(f"  Created CPU chart for vmlog.{segment_name} (Critical: {critical_count}, Error: {error_count}, EC: {len(segment_ec_events)})", args.verbose)
+        
+        # Count system events for logging
+        sys_event_counts = ', '.join(f'{k}:{len(v)}' for k, v in segment_system_events.items() if v)
+        log_message(f"  Created CPU chart for vmlog.{segment_name} (Critical: {critical_count}, Error: {error_count}, EC: {len(segment_ec_events)}, Sys: {sys_event_counts or 'none'})", args.verbose)
         
         # Filter thermal data for this vmlog time range
         # Add a bit of buffer (expand range by a few seconds)
@@ -710,7 +774,26 @@ def main():
     metadata['thermal_entries'] = total_thermal_entries
     metadata['error_count'] = len(errors)
     metadata['ec_event_count'] = len(all_ec_events)
+    metadata['system_events'] = {k: len(v) for k, v in system_events.items()}
     metadata['vmlog_segments'] = list(segment_data.keys())
+    
+    # Calculate severity stats for each log type (for button coloring)
+    # Level: 1=info, 2=warning, 3=notable, 4=critical
+    system_event_severity = {}
+    for log_type, events in system_events.items():
+        severity_counts = {'critical': 0, 'error': 0, 'warning': 0, 'info': 0}
+        for e in events:
+            level = e.get('level', 1)
+            if level >= 4:
+                severity_counts['critical'] += 1
+            elif level >= 3:
+                severity_counts['error'] += 1
+            elif level >= 2:
+                severity_counts['warning'] += 1
+            else:
+                severity_counts['info'] += 1
+        system_event_severity[log_type] = severity_counts
+    metadata['system_event_severity'] = system_event_severity
     
     try:
         # Use multi-chart report builder
@@ -738,6 +821,7 @@ def main():
         print(f"  - Thermal entries: {total_thermal_entries}")
         print(f"  - Errors found: {len(errors)}")
         print(f"  - EC events: {len(all_ec_events)}")
+        print(f"  - System events: {total_system_events}")
         print(f"  - Charts generated: {len(charts_config)}")
         print(f"  - File size: {size_str}")
         

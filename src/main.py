@@ -24,7 +24,7 @@ from typing import Dict, List, Tuple, Any, Optional
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.parsers import VmlogParser, GeneratedLogsParser, UserFeedbackParser, TempLoggerParser
+from src.parsers import VmlogParser, GeneratedLogsParser, UserFeedbackParser, TempLoggerParser, CrosEcParser
 from src.analyzers import ErrorDetector, MetricsAnalyzer
 from src.visualizers import ChartGenerator, HTMLBuilder
 
@@ -586,6 +586,32 @@ def main():
     log_message(f"Found {len(errors)} error entries", args.verbose)
     
     # ========================================
+    # Parse EC events from cros_ec.log
+    # ========================================
+    log_message("Parsing EC events from cros_ec.log...", args.verbose)
+    
+    # Get skip patterns from config
+    ec_skip_patterns = config.get('ec_events', {}).get('skip_patterns', None)
+    ec_parser = CrosEcParser(reference_year=args.year, skip_patterns=ec_skip_patterns)
+    all_ec_events = []
+    
+    # Find cros_ec.log in parsed logs
+    logs = parsed_data.get('logs', {})
+    for log_name, content in logs.items():
+        if 'cros_ec' in log_name.lower():
+            try:
+                events = ec_parser.parse_content(content)
+                all_ec_events.extend(events)
+                log_message(f"  Extracted {len(events)} EC events from {os.path.basename(log_name)}", args.verbose)
+            except Exception as e:
+                log_message(f"  Warning: Failed to parse EC events from {log_name}: {e}", args.verbose)
+    
+    # Map EC events to vmlog timeline
+    if all_ec_events:
+        all_ec_events = ec_parser.map_to_vmlog_timeline(all_ec_events, all_vmlog_data)
+    log_message(f"Total EC events: {len(all_ec_events)}", args.verbose)
+    
+    # ========================================
     # Generate multi-chart configuration
     # Each vmlog segment gets: CPU chart + Thermal chart (if matching data)
     # ========================================
@@ -593,6 +619,9 @@ def main():
     
     charts_config = []
     total_thermal_entries = 0
+    
+    # Track which EC events have been assigned to avoid duplicates across charts
+    assigned_ec_events = set()
     
     # Create charts for each vmlog segment (use natural sort for proper part ordering)
     for segment_name in sorted(segment_data.keys(), key=natural_sort_key):
@@ -616,17 +645,31 @@ def main():
         critical_count = sum(1 for e in segment_errors if e.get('severity', 0) == 4)
         error_count = sum(1 for e in segment_errors if e.get('severity', 0) == 3)
         
-        # Create CPU usage + frequency chart with error annotations
+        # Filter EC events for this time range (only include if not already assigned)
+        segment_ec_events = []
+        for e in all_ec_events:
+            if e.get('timestamp') is None:
+                continue
+            if not (seg_start - buffer <= e['timestamp'] <= seg_end + buffer):
+                continue
+            # Create unique key for this event
+            event_key = (e.get('timestamp').isoformat() if e.get('timestamp') else '', e.get('message', ''))
+            if event_key not in assigned_ec_events:
+                segment_ec_events.append(e)
+                assigned_ec_events.add(event_key)
+        
+        # Create CPU usage + frequency chart with error and EC annotations
         cpu_chart = chart_gen.create_cpu_usage_chart(
             entries,
             errors=segment_errors,
+            ec_events=segment_ec_events,
             chart_id=f'cpu_{segment_name.replace("-", "_")}',
             title=f'CPU Usage & Frequency - vmlog.{segment_name}'
         )
         cpu_chart['type'] = 'cpu'
         cpu_chart['segment'] = segment_name
         charts_config.append(cpu_chart)
-        log_message(f"  Created CPU chart for vmlog.{segment_name} (Critical: {critical_count}, Error: {error_count})", args.verbose)
+        log_message(f"  Created CPU chart for vmlog.{segment_name} (Critical: {critical_count}, Error: {error_count}, EC: {len(segment_ec_events)})", args.verbose)
         
         # Filter thermal data for this vmlog time range
         # Add a bit of buffer (expand range by a few seconds)
@@ -666,6 +709,7 @@ def main():
     metadata['total_vmlog_entries'] = sum(len(s['entries']) for s in segment_data.values())
     metadata['thermal_entries'] = total_thermal_entries
     metadata['error_count'] = len(errors)
+    metadata['ec_event_count'] = len(all_ec_events)
     metadata['vmlog_segments'] = list(segment_data.keys())
     
     try:
@@ -693,6 +737,7 @@ def main():
         print(f"  - Total vmlog entries: {sum(len(s['entries']) for s in segment_data.values())}")
         print(f"  - Thermal entries: {total_thermal_entries}")
         print(f"  - Errors found: {len(errors)}")
+        print(f"  - EC events: {len(all_ec_events)}")
         print(f"  - Charts generated: {len(charts_config)}")
         print(f"  - File size: {size_str}")
         

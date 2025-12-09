@@ -515,7 +515,7 @@ class HTMLBuilder:
         sections_html += """
         <div class="row mt-4">
             <div class="col-12">
-                <div class="mb-2 d-flex gap-2 align-items-center">
+                <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
                     <button class="btn btn-sm btn-outline-secondary" onclick="resetAllZoom()">Reset All Zoom</button>
                     <div class="dropdown">
                         <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" id="errorMarkerDropdown" data-bs-toggle="dropdown" aria-expanded="false">
@@ -532,6 +532,12 @@ class HTMLBuilder:
                             <li><a class="dropdown-item" href="#" onclick="setErrorMarkerLevel('all'); return false;">All (incl. Warning)</a></li>
                         </ul>
                     </div>
+                    <button class="btn btn-sm btn-outline-secondary" id="ecEventsBtn" onclick="toggleEcEvents()">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="bi bi-cpu me-1" viewBox="0 0 16 16">
+                            <path d="M5 0a.5.5 0 0 1 .5.5V2h1V.5a.5.5 0 0 1 1 0V2h1V.5a.5.5 0 0 1 1 0V2h1V.5a.5.5 0 0 1 1 0V2A2.5 2.5 0 0 1 14 4.5h1.5a.5.5 0 0 1 0 1H14v1h1.5a.5.5 0 0 1 0 1H14v1h1.5a.5.5 0 0 1 0 1H14v1h1.5a.5.5 0 0 1 0 1H14a2.5 2.5 0 0 1-2.5 2.5v1.5a.5.5 0 0 1-1 0V14h-1v1.5a.5.5 0 0 1-1 0V14h-1v1.5a.5.5 0 0 1-1 0V14h-1v1.5a.5.5 0 0 1-1 0V14A2.5 2.5 0 0 1 2 11.5H.5a.5.5 0 0 1 0-1H2v-1H.5a.5.5 0 0 1 0-1H2v-1H.5a.5.5 0 0 1 0-1H2v-1H.5a.5.5 0 0 1 0-1H2A2.5 2.5 0 0 1 4.5 2V.5A.5.5 0 0 1 5 0zm-.5 3A1.5 1.5 0 0 0 3 4.5v7A1.5 1.5 0 0 0 4.5 13h7a1.5 1.5 0 0 0 1.5-1.5v-7A1.5 1.5 0 0 0 11.5 3h-7zM5 6.5A1.5 1.5 0 0 1 6.5 5h3A1.5 1.5 0 0 1 11 6.5v3A1.5 1.5 0 0 1 9.5 11h-3A1.5 1.5 0 0 1 5 9.5v-3zM6.5 6a.5.5 0 0 0-.5.5v3a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5v-3a.5.5 0 0 0-.5-.5h-3z"/>
+                        </svg>
+                        <span id="ecEventsBtnText">EC Events: Off</span>
+                    </button>
                 </div>
             </div>
         </div>"""
@@ -747,7 +753,9 @@ class HTMLBuilder:
         const thermalConfig = {thermal_json};
         const chartInstances = {{}};
         const originalAnnotations = {{}};  // Store original annotations for filtering
+        const originalEcAnnotations = {{}};  // Store EC event annotations separately
         let currentErrorLevel = 'none';  // Default: hide all error markers
+        let ecEventsEnabled = false;  // Default: hide EC events
         
         // Create custom tooltip element for error annotations
         function createErrorTooltip() {{
@@ -788,7 +796,8 @@ class HTMLBuilder:
                 let foundAnnotation = null;
                 
                 for (const [key, annotation] of Object.entries(annotations)) {{
-                    if (!annotation.errorDetails) continue;
+                    // Skip annotations without details
+                    if (!annotation.errorDetails && !annotation.ecDetails) continue;
                     
                     // Get the x position of the annotation line
                     const xScale = chart.scales.x;
@@ -801,19 +810,40 @@ class HTMLBuilder:
                     }}
                 }}
                 
-                if (foundAnnotation && foundAnnotation.errorDetails) {{
-                    const details = foundAnnotation.errorDetails;
-                    errorTooltip.innerHTML = `
-                        <div style="margin-bottom: 6px; color: ${{details.severity === 'CRITICAL' ? '#a371f7' : '#f85149'}}; font-weight: bold;">
-                            ${{details.severity}} @ ${{details.time}}
-                        </div>
-                        <div style="margin-bottom: 4px; color: #8b949e;">
-                            Source: ${{details.source}}
-                        </div>
-                        <div style="word-wrap: break-word;">
-                            ${{details.message}}
-                        </div>
-                    `;
+                if (foundAnnotation) {{
+                    let tooltipContent = '';
+                    
+                    if (foundAnnotation.errorDetails) {{
+                        const details = foundAnnotation.errorDetails;
+                        tooltipContent = `
+                            <div style="margin-bottom: 6px; color: ${{details.severity === 'CRITICAL' ? '#a371f7' : '#f85149'}}; font-weight: bold;">
+                                ${{details.severity}} @ ${{details.time}}
+                            </div>
+                            <div style="margin-bottom: 4px; color: #8b949e;">
+                                Source: ${{details.source}}
+                            </div>
+                            <div style="word-wrap: break-word;">
+                                ${{details.message}}
+                            </div>
+                        `;
+                    }} else if (foundAnnotation.ecDetails) {{
+                        const details = foundAnnotation.ecDetails;
+                        const levelColors = {{1: '#8b949e', 2: '#d29922', 3: '#39c5cf', 4: '#f85149'}};
+                        const levelNames = {{1: 'INFO', 2: 'NOTICE', 3: 'NOTABLE', 4: 'CRITICAL'}};
+                        tooltipContent = `
+                            <div style="margin-bottom: 6px; color: ${{levelColors[details.level] || '#39c5cf'}}; font-weight: bold;">
+                                EC: ${{details.type}} @ ${{details.time}}
+                            </div>
+                            <div style="margin-bottom: 4px; color: #8b949e;">
+                                Level: ${{levelNames[details.level] || 'INFO'}}
+                            </div>
+                            <div style="word-wrap: break-word;">
+                                ${{details.message}}
+                            </div>
+                        `;
+                    }}
+                    
+                    errorTooltip.innerHTML = tooltipContent;
                     errorTooltip.style.display = 'block';
                     errorTooltip.style.left = (e.clientX + 15) + 'px';
                     errorTooltip.style.top = (e.clientY - 10) + 'px';
@@ -843,6 +873,9 @@ class HTMLBuilder:
             
             const filtered = {{}};
             for (const [key, annotation] of Object.entries(annotations)) {{
+                // Skip EC annotations - they are handled separately
+                if (key.startsWith('ec_')) continue;
+                
                 const sevLevel = annotation.errorDetails?.severityLevel;
                 if (sevLevel === undefined) continue;
                 
@@ -853,6 +886,44 @@ class HTMLBuilder:
                 }}
             }}
             return filtered;
+        }}
+        
+        // Filter EC annotations
+        function filterEcAnnotations(annotations) {{
+            const filtered = {{}};
+            for (const [key, annotation] of Object.entries(annotations)) {{
+                if (key.startsWith('ec_') && annotation.ecDetails) {{
+                    filtered[key] = annotation;
+                }}
+            }}
+            return filtered;
+        }}
+        
+        // Combine error and EC annotations based on current settings
+        function getCombinedAnnotations(chartId) {{
+            const errorAnnotations = filterAnnotationsByLevel(originalAnnotations[chartId] || {{}}, currentErrorLevel);
+            const ecAnnotations = ecEventsEnabled ? filterEcAnnotations(originalAnnotations[chartId] || {{}}) : {{}};
+            return {{...errorAnnotations, ...ecAnnotations}};
+        }}
+        
+        // Toggle EC events on/off
+        function toggleEcEvents() {{
+            ecEventsEnabled = !ecEventsEnabled;
+            const btnText = document.getElementById('ecEventsBtnText');
+            const btn = document.getElementById('ecEventsBtn');
+            
+            // Update button text and style
+            btnText.textContent = ecEventsEnabled ? 'EC Events: On' : 'EC Events: Off';
+            btn.classList.remove('btn-outline-secondary', 'btn-outline-info');
+            btn.classList.add(ecEventsEnabled ? 'btn-outline-info' : 'btn-outline-secondary');
+            
+            // Update annotations on all charts
+            for (const [chartId, chart] of Object.entries(chartInstances)) {{
+                if (chart.options.plugins.annotation) {{
+                    chart.options.plugins.annotation.annotations = getCombinedAnnotations(chartId);
+                    chart.update('none');  // Update without animation
+                }}
+            }}
         }}
         
         // Set error marker level from dropdown
@@ -882,11 +953,10 @@ class HTMLBuilder:
                 btn.classList.add('btn-outline-info');
             }}
             
-            // Update annotations on all charts
+            // Update annotations on all charts (combined with EC events)
             for (const [chartId, chart] of Object.entries(chartInstances)) {{
                 if (chart.options.plugins.annotation) {{
-                    const filteredAnnotations = filterAnnotationsByLevel(originalAnnotations[chartId] || {{}}, level);
-                    chart.options.plugins.annotation.annotations = filteredAnnotations;
+                    chart.options.plugins.annotation.annotations = getCombinedAnnotations(chartId);
                     chart.update('none');  // Update without animation
                 }}
             }}

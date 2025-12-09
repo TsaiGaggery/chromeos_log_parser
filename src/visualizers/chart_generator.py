@@ -286,6 +286,86 @@ class ChartGenerator:
         
         return annotations
     
+    def _create_ec_annotations(self, ec_events: List[Dict]) -> Dict:
+        """
+        Create Chart.js annotation objects for EC (Embedded Controller) events.
+        Shows vertical lines for EC events like power state, lid, AC, thermal events.
+        
+        Args:
+            ec_events: List of EC event dictionaries from CrosEcParser
+            
+        Returns:
+            Dictionary of annotation configurations
+        """
+        from datetime import timedelta
+        
+        annotations = {}
+        
+        # Sort by level (highest first) to prioritize important events in display order
+        sorted_events = sorted(ec_events, key=lambda x: x.get('level', 1), reverse=True)
+        
+        # Track timestamps to offset duplicates (so overlapping events are visible)
+        seen_timestamps = {}
+        
+        for i, event in enumerate(sorted_events):
+            timestamp = event.get('timestamp') or event.get('vmlog_timestamp')
+            if not timestamp:
+                continue
+            
+            # Offset duplicate timestamps by small increments (100ms each)
+            ts_key = timestamp.isoformat()
+            if ts_key in seen_timestamps:
+                seen_timestamps[ts_key] += 1
+                # Add 100ms offset for each duplicate
+                timestamp = timestamp + timedelta(milliseconds=100 * seen_timestamps[ts_key])
+            else:
+                seen_timestamps[ts_key] = 0
+            
+            event_type = event.get('type', 'EC')
+            level = event.get('level', 1)
+            color = event.get('color', 'rgba(57, 197, 207, 0.8)')  # Default cyan
+            
+            # Make color more opaque
+            if color.startswith('rgb('):
+                color = color.replace('rgb(', 'rgba(').replace(')', ', 0.8)')
+            
+            # Get event message for hover display
+            event_message = event.get('message', 'EC Event')[:100]
+            
+            # Higher level events get thicker lines
+            line_width = 1 + level
+            
+            annotation_id = f'ec_{i}'
+            annotations[annotation_id] = {
+                'type': 'line',
+                'xMin': timestamp.isoformat(),
+                'xMax': timestamp.isoformat(),
+                'borderColor': color,
+                'borderWidth': line_width,
+                'borderDash': [3, 3],  # Short dashes for EC events
+                'label': {
+                    'display': True,
+                    'content': event_type[:6],  # Short label
+                    'position': 'end',  # Top of chart
+                    'backgroundColor': color,
+                    'color': '#ffffff',
+                    'font': {
+                        'size': 8,
+                        'weight': 'normal',
+                    },
+                    'padding': 2,
+                },
+                # Store EC event details for hover tooltip  
+                'ecDetails': {
+                    'message': event_message,
+                    'type': event_type,
+                    'level': level,
+                    'time': timestamp.strftime('%H:%M:%S') if hasattr(timestamp, 'strftime') else str(timestamp),
+                }
+            }
+        
+        return annotations
+    
     def _create_scales(self, metrics: List[str]) -> Dict:
         """
         Create multi-axis scale configuration.
@@ -425,6 +505,7 @@ class ChartGenerator:
         }
     
     def create_cpu_usage_chart(self, vmlog_data: List[Dict], errors: List[Dict] = None,
+                               ec_events: List[Dict] = None,
                                chart_id: str = "cpu_chart", 
                                title: str = "CPU Usage & Frequency") -> Dict:
         """
@@ -433,6 +514,7 @@ class ChartGenerator:
         Args:
             vmlog_data: Parsed vmlog entries
             errors: Error entries with timestamps
+            ec_events: EC (Embedded Controller) events from cros_ec.log
             chart_id: Unique ID for this chart
             title: Chart title
             
@@ -456,9 +538,17 @@ class ChartGenerator:
                 datasets.append(dataset)
         
         # Create error annotations
-        annotations = {}
+        error_annotations = {}
         if errors:
-            annotations = self._create_error_annotations(errors)
+            error_annotations = self._create_error_annotations(errors)
+        
+        # Create EC event annotations (stored separately for independent toggling)
+        ec_annotations = {}
+        if ec_events:
+            ec_annotations = self._create_ec_annotations(ec_events)
+        
+        # Combine all annotations
+        annotations = {**error_annotations, **ec_annotations}
         
         config = {
             'type': 'line',
